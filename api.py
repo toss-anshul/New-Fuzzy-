@@ -374,10 +374,16 @@ async def ocr_bank_verify(
     full_text_alnum_upper = _normalize_alnum_upper(full_text)
 
     def match_account(num: str) -> bool:
-        # Strict digits-only account number match (ignore spaces)
+        # Strict digits-only account number match
+        # Must be a standalone sequence of digits (ignoring spaces/punctuation)
+        import re
         target = "".join(ch for ch in str(num) if ch.isdigit())
-        haystack = "".join(ch for ch in (full_text or "") if ch.isdigit())
-        return bool(target) and target in haystack
+        if not target:
+            return False
+        # Use \D{0,5} to avoid matching digits scattered randomly across the document.
+        # (?<!\d) and (?!\d) ensure it is not just a substring of a larger number.
+        pattern = r"(?<!\d)" + r"\D{0,5}".join(target) + r"(?!\d)"
+        return bool(re.search(pattern, full_text))
 
     def match_ifsc(code: str) -> bool:
         # IFSC: 11 chars => 4 letters + '0' + 6 digits
@@ -412,30 +418,17 @@ async def ocr_bank_verify(
         if not target:
             return False
 
-        # Build OCR-safe haystack (for continuous text)
-        hay = _ocr_safe_ifsc(full_text_alnum_upper[:11])  # placeholder to reuse function shape
-        # Instead of slicing, normalize the whole OCR text with the same digit-map rules,
-        # then look for target as a substring.
-        digit_map_global = {
-            "O": "0",
-            "I": "1",
-            "L": "1",
-            "Z": "2",
-            "S": "5",
-            "B": "8",
-        }
         ocr_alnum = full_text_alnum_upper
         if not ocr_alnum:
             return False
-        # Normalize any 'O' that appears right after 4 letters (pattern: [A-Z]{4}O)
-        ocr_alnum = re.sub(r"([A-Z]{4})O", r"\g<1>0", ocr_alnum)
-        ocr_alnum = "".join(digit_map_global.get(ch, ch) for ch in ocr_alnum)
-        if target in ocr_alnum:
-            return True
 
-        # Also check token candidates of length 11 (more precise)
-        tokens = re.findall(r"[A-Z0-9]{11}", ocr_alnum)
-        return any(tok == target for tok in tokens)
+        # Apply _ocr_safe_ifsc over a sliding 11-character window
+        for i in range(len(ocr_alnum) - 10):
+            window = ocr_alnum[i:i+11]
+            if _ocr_safe_ifsc(window) == target:
+                return True
+
+        return False
 
     def match_simple(value: Optional[str]) -> bool:
         if not value:
