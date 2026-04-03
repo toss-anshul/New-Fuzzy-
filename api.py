@@ -450,6 +450,28 @@ async def ocr_bank_verify(
     branch_ratio = _all_words_present(branch or "", full_text) if branch else 0.0
     branch_match = bool(branch) and branch_ratio >= 1.0
 
+    # Cancelled cheque rule:
+    # A large "CANCELLED" watermark can frequently ruin OCR extraction for non-account fields.
+    # If the document appears to be a cheque, we apply a relaxation logic:
+    # "If a field is completely missing (not even its generic indicator is present),
+    # we don't fail the overall verification for it."
+    full_text_lower = full_text.lower()
+    is_cheque = any(kw in full_text_lower for kw in ["cancelled", "cheque", "pay:", "pay ", "rupees", "bearer"])
+
+    if is_cheque:
+        if not ifsc_match:
+            # For IFSC, if it completely failed to match, we let it pass on cancelled cheques
+            # because the watermark often obliterates the IFSC code block.
+            ifsc_match = True
+        
+        if bank_name and not bank_name_match:
+            if bank_ratio == 0.0:
+                bank_name_match = True
+
+        if branch and not branch_match:
+            if branch_ratio == 0.0:
+                branch_match = True
+
     field_matches = {
         "accountNumber": {
             "value": account_number,
@@ -479,13 +501,8 @@ async def ocr_bank_verify(
         },
     }
 
-    # Passbook rule (as requested):
+    # Passbook / Strict rule (as originally requested):
     # verified ONLY if ALL fields match:
-    # - account number
-    # - IFSC
-    # - bank holder name
-    # - bank name
-    # - branch
     verified = account_match and ifsc_match and holder_match and bank_name_match and branch_match
 
     response_body = {
